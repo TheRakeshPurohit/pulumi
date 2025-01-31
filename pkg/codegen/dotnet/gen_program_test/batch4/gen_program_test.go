@@ -1,4 +1,4 @@
-// Copyright 2016-2022, Pulumi Corporation.
+// Copyright 2016-2024, Pulumi Corporation.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,14 +17,21 @@
 package batch4
 
 import (
-  "os"
-  "testing"
+	"os"
+	"path/filepath"
+	"testing"
 
-  codegen "github.com/pulumi/pulumi/pkg/v3/codegen/dotnet"
-  "github.com/pulumi/pulumi/pkg/v3/codegen/testing/test"
+	"github.com/stretchr/testify/require"
+
+	codegen "github.com/pulumi/pulumi/pkg/v3/codegen/dotnet"
+	"github.com/pulumi/pulumi/pkg/v3/codegen/testing/test"
 )
 
 func TestGenerateProgram(t *testing.T) {
-  os.Chdir("../../../dotnet") // chdir into codegen/dotnet
-  codegen.GenerateProgramBatchTest(t, test.ProgramTestBatch(4, 6))
+	rootDir, err := filepath.Abs(filepath.Join("..", "..", "..", "..", ".."))
+	require.NoError(t, err)
+
+	// Change into pkg/codegen/dotnet
+	os.Chdir(filepath.Join(rootDir, "pkg", "codegen", "dotnet"))
+	test.GenerateProgramBatchTest("dotnet")(t, rootDir, codegen.GenerateProgram, test.ProgramTestBatch(4, 6))
 }

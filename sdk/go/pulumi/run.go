@@ -25,7 +25,9 @@ import (
 	multierror "github.com/hashicorp/go-multierror"
 
 	"github.com/pulumi/pulumi/sdk/v3/go/common/constant"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/resource"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/contract"
+	pulumirpc "github.com/pulumi/pulumi/sdk/v3/proto/go"
 
 	"google.golang.org/grpc"
 )
@@ -42,7 +44,7 @@ func Run(body RunFunc, opts ...RunOption) {
 	logError := func(ctx *Context, programErr error) {
 		logErr := ctx.Log.Error(fmt.Sprintf("an unhandled error occurred: program failed: \n%v",
 			programErr), nil)
-		contract.AssertNoError(logErr)
+		contract.IgnoreError(logErr)
 	}
 
 	err := runErrInner(body, logError, opts...)
@@ -104,7 +106,7 @@ func runErrInner(body RunFunc, logError func(*Context, error), opts ...RunOption
 // RunWithContext runs the body of a Pulumi program using the given Context for information about the target stack,
 // configuration, and engine connection.
 func RunWithContext(ctx *Context, body RunFunc) error {
-	info := ctx.info
+	info := ctx.state.info
 
 	// Create a root stack resource that we'll parent everything to.
 	var stack ResourceState
@@ -113,7 +115,7 @@ func RunWithContext(ctx *Context, body RunFunc) error {
 	if err != nil {
 		return err
 	}
-	ctx.stack = &stack
+	ctx.state.stack = &stack
 
 	// Execute the body.
 	var result error
@@ -122,7 +124,7 @@ func RunWithContext(ctx *Context, body RunFunc) error {
 	}
 
 	// Register all the outputs to the stack object.
-	if err = ctx.RegisterResourceOutputs(ctx.stack, Map(ctx.exports)); err != nil {
+	if err = ctx.RegisterResourceOutputs(ctx.state.stack, Map(ctx.state.exports)); err != nil {
 		result = multierror.Append(result, err)
 	}
 
@@ -140,24 +142,29 @@ type RunFunc func(ctx *Context) error
 
 // RunInfo contains all the metadata about a run request.
 type RunInfo struct {
-	Project          string
-	Stack            string
-	Config           map[string]string
-	ConfigSecretKeys []string
-	Parallel         int
-	DryRun           bool
-	MonitorAddr      string
-	EngineAddr       string
-	Organization     string
-	Mocks            MockResourceMonitor
-	getPlugins       bool
-	engineConn       *grpc.ClientConn // Pre-existing engine connection. If set this is used over EngineAddr.
+	Project           string
+	Stack             string
+	Config            map[string]string
+	ConfigSecretKeys  []string
+	ConfigPropertyMap resource.PropertyMap
+	Parallel          int32
+	DryRun            bool
+	MonitorAddr       string
+	EngineAddr        string
+	Organization      string
+	Mocks             MockResourceMonitor
+
+	getPlugins bool
+	engineConn *grpc.ClientConn // Pre-existing engine connection. If set this is used over EngineAddr.
+
+	// If non-nil, wraps the resource monitor client used by Context.
+	wrapResourceMonitorClient func(pulumirpc.ResourceMonitorClient) pulumirpc.ResourceMonitorClient
 }
 
 // getEnvInfo reads various program information from the process environment.
 func getEnvInfo() RunInfo {
 	// Most of the variables are just strings, and we can read them directly.  A few of them require more parsing.
-	parallel, _ := strconv.Atoi(os.Getenv(EnvParallel))
+	parallel, _ := strconv.ParseInt(os.Getenv(EnvParallel), 10, 32)
 	dryRun, _ := strconv.ParseBool(os.Getenv(EnvDryRun))
 	getPlugins, _ := strconv.ParseBool(os.Getenv(envPlugins))
 
@@ -177,7 +184,7 @@ func getEnvInfo() RunInfo {
 		Stack:            os.Getenv(EnvStack),
 		Config:           config,
 		ConfigSecretKeys: configSecretKeys,
-		Parallel:         parallel,
+		Parallel:         int32(parallel), //nolint:gosec // guarded by strconv.ParseInt
 		DryRun:           dryRun,
 		MonitorAddr:      os.Getenv(EnvMonitor),
 		EngineAddr:       os.Getenv(EnvEngine),

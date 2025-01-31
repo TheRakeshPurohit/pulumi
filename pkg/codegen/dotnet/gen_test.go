@@ -1,3 +1,17 @@
+// Copyright 2020-2024, Pulumi Corporation.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package dotnet
 
 import (
@@ -17,8 +31,10 @@ func TestGeneratePackage(t *testing.T) {
 	t.Parallel()
 
 	test.TestSDKCodegen(t, &test.SDKCodegenOptions{
-		Language:   "dotnet",
-		GenPackage: GeneratePackage,
+		Language: "dotnet",
+		GenPackage: func(t string, p *schema.Package, e map[string][]byte) (map[string][]byte, error) {
+			return GeneratePackage(t, p, e, nil)
+		},
 		Checks: map[string]test.CodegenCheck{
 			"dotnet/compile": typeCheckGeneratedPackage,
 			"dotnet/test":    testGeneratedPackage,
@@ -32,7 +48,7 @@ var buildMutex sync.Mutex
 func typeCheckGeneratedPackage(t *testing.T, pwd string) {
 	versionPath := filepath.Join(pwd, "version.txt")
 	if _, err := os.Stat(versionPath); os.IsNotExist(err) {
-		err := os.WriteFile(versionPath, []byte("0.0.0\n"), 0600)
+		err := os.WriteFile(versionPath, []byte("0.0.0\n"), 0o600)
 		require.NoError(t, err)
 	} else if err != nil {
 		require.NoError(t, err)

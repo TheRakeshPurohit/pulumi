@@ -17,23 +17,24 @@ package operations
 import (
 	"context"
 	"encoding/json"
-	"io/ioutil"
+	"os"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 
 	"github.com/pulumi/pulumi/pkg/v3/resource/stack"
+	"github.com/pulumi/pulumi/pkg/v3/secrets/b64"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/apitype"
 )
 
 func getPulumiResources(t *testing.T, path string) *Resource {
 	ctx := context.Background()
 	var checkpoint apitype.CheckpointV3
-	byts, err := ioutil.ReadFile(path)
+	byts, err := os.ReadFile(path)
 	assert.NoError(t, err)
 	err = json.Unmarshal(byts, &checkpoint)
 	assert.NoError(t, err)
-	snapshot, err := stack.DeserializeCheckpoint(ctx, &checkpoint)
+	snapshot, err := stack.DeserializeCheckpoint(ctx, b64.Base64SecretsProvider, &checkpoint)
 	assert.NoError(t, err)
 	resources := NewResourceTree(snapshot.Resources)
 	return resources

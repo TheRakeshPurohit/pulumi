@@ -15,6 +15,7 @@
 """
 Assets are the Pulumi notion of data blobs that can be passed to resources.
 """
+
 from os import PathLike, fspath
 from typing import Dict, Union
 
@@ -35,7 +36,6 @@ class FileAsset(Asset):
     path: str
 
     def __init__(self, path: Union[str, PathLike]) -> None:
-
         if not isinstance(path, (str, PathLike)):
             raise TypeError("FileAsset path must be a string or os.PathLike")
         self.path = fspath(path)

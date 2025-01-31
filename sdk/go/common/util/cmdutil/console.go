@@ -16,14 +16,17 @@ package cmdutil
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"regexp"
 	"runtime"
 	"strings"
 
 	"github.com/rivo/uniseg"
-	"golang.org/x/crypto/ssh/terminal"
+	"golang.org/x/term"
 
+	"github.com/pulumi/pulumi/sdk/v3/go/common/diag/colors"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/slice"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/ciutil"
 )
 
@@ -59,12 +62,42 @@ func InteractiveTerminal() bool {
 	// if we're piping in stdin, we're clearly not interactive, as there's no way for a user to
 	// provide input.  If we're piping stdout, we also can't be interactive as there's no way for
 	// users to see prompts to interact with them.
-	return terminal.IsTerminal(int(os.Stdin.Fd())) &&
-		terminal.IsTerminal(int(os.Stdout.Fd()))
+	//nolint:gosec // os.Stdin.Fd() == 0 && os.Stdout.Fd() == 1: uintptr -> int conversion is always safe
+	return term.IsTerminal(int(os.Stdin.Fd())) &&
+		term.IsTerminal(int(os.Stdout.Fd()))
 }
 
 // ReadConsole reads the console with the given prompt text.
 func ReadConsole(prompt string) (string, error) {
+	//nolint:gosec // os.Stdin.Fd() == 0: uintptr -> int conversion is always safe
+	if !term.IsTerminal(int(os.Stdin.Fd())) {
+		return readConsolePlain(os.Stdout, os.Stdin, prompt)
+	}
+
+	return readConsoleFancy(os.Stdout, os.Stdin, prompt, false /* secret */)
+}
+
+// ReadConsoleWithDefault reads the console with the given prompt text with support for a default value.
+func ReadConsoleWithDefault(prompt string, defaultValue string) (string, error) {
+	promptMessage := fmt.Sprintf("%s [%s]", prompt, defaultValue)
+	value, err := ReadConsole(promptMessage)
+	if err != nil {
+		return "", err
+	}
+
+	if value == "" {
+		value = defaultValue
+	}
+
+	return value, nil
+}
+
+// readConsolePlain prints the given prompt (if any),
+// and reads the user's response from stdin.
+//
+// It does so without altering the terminal's state in any way,
+// and will work even if stdin is not a terminal.
+func readConsolePlain(stdout io.Writer, stdin io.Reader, prompt string) (string, error) {
 	if prompt != "" {
 		fmt.Print(prompt + ": ")
 	}
@@ -123,11 +156,19 @@ type TableRow struct {
 	AdditionalInfo string   // an optional line of information to print after the row
 }
 
-// PrintTable prints a grid of rows and columns.  Width of columns is automatically determined by
+// FprintTable prints a grid of rows and columns.  Width of columns is automatically determined by
 // the max length of the items in each column.  A default gap of two spaces is printed between each
 // column.
+func FprintTable(w io.Writer, table Table) error {
+	_, err := fmt.Fprint(w, table)
+	return err
+}
+
+// PrintTable prints the table to stdout.
+// See [FprintTable] for details.
 func PrintTable(table Table) {
-	fmt.Print(table)
+	_ = FprintTable(os.Stdout, table)
+	// Ignore error for stdout.
 }
 
 // PrintTableWithGap prints a grid of rows and columns.  Width of columns is automatically determined
@@ -149,14 +190,14 @@ func MeasureText(text string) int {
 	// Strip ansi escape sequences
 	clean := ansiEscape.ReplaceAllString(text, "")
 	// Need to count graphemes not runes or bytes
-	return uniseg.GraphemeClusterCount(clean)
+	return uniseg.StringWidth(clean)
 }
 
 // normalizedRows returns the rows of a table in normalized form.
 //
 // A row is considered normalized if and only if it has no new lines in any of its fields.
-func (table *Table) normalizedRows() []TableRow {
-	rows := make([]TableRow, 0, len(table.Rows))
+func (table Table) normalizedRows() []TableRow {
+	rows := slice.Prealloc[TableRow](len(table.Rows))
 	for _, row := range table.Rows {
 		info := row.AdditionalInfo
 		buckets := make([][]string, len(row.Columns))
@@ -183,7 +224,28 @@ func (table *Table) normalizedRows() []TableRow {
 	return rows
 }
 
-func (table *Table) ToStringWithGap(columnGap string) string {
+func (table Table) ToStringWithGap(columnGap string) string {
+	return table.Render(&TableRenderOptions{ColumnGap: columnGap})
+}
+
+type TableRenderOptions struct {
+	ColumnGap   string
+	HeaderStyle []colors.Color
+	ColumnStyle []colors.Color
+	Color       colors.Colorization
+}
+
+func (table Table) Render(opts *TableRenderOptions) string {
+	if opts == nil {
+		opts = &TableRenderOptions{}
+	}
+	if opts.ColumnGap == "" {
+		opts.ColumnGap = "  "
+	}
+	if opts.Color == "" {
+		opts.Color = colors.Never
+	}
+
 	columnCount := len(table.Headers)
 
 	// Figure out the preferred column width for each column.  It will be set to the max length of
@@ -209,12 +271,25 @@ func (table *Table) ToStringWithGap(columnGap string) string {
 		}
 	}
 
-	result := ""
-	for _, row := range allRows {
-		result += table.Prefix
+	var result strings.Builder
+	for rowIndex, row := range allRows {
+		result.WriteString(table.Prefix)
 
 		for columnIndex, val := range row.Columns {
-			result += val
+			style := opts.HeaderStyle
+			if rowIndex != 0 {
+				style = opts.ColumnStyle
+			}
+
+			if len(style) != 0 {
+				result.WriteString(opts.Color.Colorize(style[columnIndex]))
+			}
+
+			result.WriteString(val)
+
+			if len(style) != 0 {
+				result.WriteString(opts.Color.Colorize(colors.Reset))
+			}
 
 			if columnIndex < columnCount-1 {
 				// Work out how much whitespace we need to add to this string to bring it up to the
@@ -222,27 +297,20 @@ func (table *Table) ToStringWithGap(columnGap string) string {
 
 				maxWidth := preferredColumnWidths[columnIndex]
 				padding := maxWidth - MeasureText(val)
-				result += strings.Repeat(" ", padding)
+				result.WriteString(strings.Repeat(" ", padding))
 
 				// Now, ensure we have the requested gap between columns as well.
-				result += columnGap
+				result.WriteString(opts.ColumnGap)
 			}
 			// do not want whitespace appended to the last column.  It would cause wrapping on lines
 			// that were not actually long if some other line was very long.
 		}
 
-		result += "\n"
+		result.WriteByte('\n')
 
 		if row.AdditionalInfo != "" {
-			result += row.AdditionalInfo
+			result.WriteString(row.AdditionalInfo)
 		}
 	}
-	return result
-}
-
-func max(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
+	return result.String()
 }

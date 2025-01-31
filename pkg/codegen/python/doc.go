@@ -55,7 +55,7 @@ func (d DocLanguageHelper) GetDocLinkForResourceType(pkg *schema.Package, modNam
 		path = modName
 		fqdnTypeName = fmt.Sprintf("%s.%s", modName, typeName)
 	case pkg.Name != "" && modName == "":
-		path = fmt.Sprintf("pulumi_%s", pkg.Name)
+		path = "pulumi_" + pkg.Name
 		fqdnTypeName = fmt.Sprintf("pulumi_%s.%s", pkg.Name, typeName)
 	}
 
@@ -80,7 +80,7 @@ func (d DocLanguageHelper) GetLanguageTypeString(pkg *schema.Package, moduleName
 		mod:         moduleName,
 		typeDetails: typeDetails,
 	}
-	typeName := mod.typeString(t, input, false /*acceptMapping*/)
+	typeName := mod.typeString(t, input, false /*acceptMapping*/, false /*forDict*/)
 
 	// Remove any package qualifiers from the type name.
 	if !input {
@@ -108,17 +108,24 @@ func (d DocLanguageHelper) GetMethodName(m *schema.Method) string {
 }
 
 func (d DocLanguageHelper) GetMethodResultName(pkg *schema.Package, modName string, r *schema.Resource,
-	m *schema.Method) string {
+	m *schema.Method,
+) string {
+	var returnType *schema.ObjectType
+	if m.Function.ReturnType != nil {
+		if objectType, ok := m.Function.ReturnType.(*schema.ObjectType); ok && objectType != nil {
+			returnType = objectType
+		}
+	}
 
 	if info, ok := pkg.Language["python"].(PackageInfo); ok {
-		if info.LiftSingleValueMethodReturns && m.Function.Outputs != nil && len(m.Function.Outputs.Properties) == 1 {
+		if info.LiftSingleValueMethodReturns && returnType != nil && len(returnType.Properties) == 1 {
 			typeDetails := map[*schema.ObjectType]*typeDetails{}
 			mod := &modContext{
 				pkg:         pkg.Reference(),
 				mod:         modName,
 				typeDetails: typeDetails,
 			}
-			return mod.typeString(m.Function.Outputs.Properties[0].Type, false, false)
+			return mod.typeString(returnType.Properties[0].Type, false, false, false /*forDict*/)
 		}
 	}
 	return fmt.Sprintf("%s.%sResult", resourceName(r), title(d.GetMethodName(m)))
@@ -147,6 +154,6 @@ func (d DocLanguageHelper) GetModuleDocLink(pkg *schema.Package, modName string)
 	} else {
 		displayName = fmt.Sprintf("%s/%s", pyPack(pkg.Name), strings.ToLower(modName))
 	}
-	link = fmt.Sprintf("/docs/reference/pkg/python/%s", displayName)
+	link = "/docs/reference/pkg/python/" + displayName
 	return displayName, link
 }

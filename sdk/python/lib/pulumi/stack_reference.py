@@ -12,11 +12,43 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from asyncio import ensure_future
-from typing import Optional, Any, List, Callable
-from copy import deepcopy
+from typing import Optional, Dict, Any, List
 
 from .output import Output, Input
 from .resource import CustomResource, ResourceOptions
+
+
+class StackReferenceOutputDetails:
+    """
+    Records the output of a StackReference.
+    At most one of the value and secret_value fields will be set.
+    """
+
+    value: Optional[Any]
+    """
+    Output value returned by the StackReference.
+    None if the value is a secret or if it does not exist.
+    """
+
+    secret_value: Optional[Any]
+    """
+    Secret value returned by the StackReference.
+    None if the value is not a secret or if it does not exist.
+    """
+
+    def __init__(
+        self,
+        value: Optional[Any] = None,
+        secret_value: Optional[Any] = None,
+    ) -> None:
+        """
+        :param Optional[Any] value:
+            Non-secret output value, if any.
+        :param Optional[Any] secret_value:
+            Secret output value, if any.
+        """
+        self.value = value
+        self.secret_value = secret_value
 
 
 class StackReference(CustomResource):
@@ -30,7 +62,7 @@ class StackReference(CustomResource):
     The name of the referenced stack.
     """
 
-    outputs: Output[dict]
+    outputs: Output[Dict[str, Any]]
     """
     The outputs of the referenced stack.
     """
@@ -73,7 +105,9 @@ class StackReference(CustomResource):
 
         :param Input[str] name: The name of the stack output to fetch.
         """
-        value: Output[Any] = Output.all(Output.from_input(name), self.outputs).apply(lambda l: l[1].get(l[0]))  # type: ignore
+        value: Output[Any] = Output.all(Output.from_input(name), self.outputs).apply(
+            lambda l: l[1].get(l[0])
+        )  # type: ignore
         is_secret = ensure_future(self.__is_secret_name(name))
 
         return Output(value.resources(), value.future(), value.is_known(), is_secret)
@@ -86,10 +120,32 @@ class StackReference(CustomResource):
         :param Input[str] name: The name of the stack output to fetch.
         """
 
-        value = Output.all(Output.from_input(name), self.outputs).apply(lambda l: l[1][l[0]])  # type: ignore
+        value = Output.all(Output.from_input(name), self.outputs).apply(
+            lambda l: l[1][l[0]]
+        )  # type: ignore
         is_secret = ensure_future(self.__is_secret_name(name))
 
         return Output(value.resources(), value.future(), value.is_known(), is_secret)
+
+    async def get_output_details(self, name: str) -> StackReferenceOutputDetails:
+        """
+        Fetches the value of the named stack output
+        and builds a StackReferenceOutputDetails object from it.
+
+        The returned object has its `value` or `secret_value` fields set
+        depending on whether the output is a secret.
+        Neither field is set if the output was not found.
+        """
+
+        is_secret = await ensure_future(self.__is_secret_name(name))
+        output_val = self.outputs.apply(lambda os: os[name])
+        if not await output_val.is_known():
+            return StackReferenceOutputDetails()
+
+        value = await output_val.future()
+        if is_secret:
+            return StackReferenceOutputDetails(secret_value=value)
+        return StackReferenceOutputDetails(value=value)
 
     def translate_output_property(self, prop: str) -> str:
         """
@@ -116,7 +172,7 @@ class StackReference(CustomResource):
         # determine if this output should be secret. Names could be None here in cases where we are
         # using an older CLI that did not return this information (in this case we again fallback to
         # the secretness of outputs value).
-        names = await (self.secret_output_names.future())
+        names = await self.secret_output_names.future()
         if names is None:
             return await self.outputs.is_secret()
 

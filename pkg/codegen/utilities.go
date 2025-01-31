@@ -17,10 +17,10 @@ package codegen
 import (
 	"os"
 	"path/filepath"
-	"reflect"
 	"sort"
 
 	"github.com/pulumi/pulumi/pkg/v3/codegen/schema"
+	"github.com/pulumi/pulumi/sdk/v3/go/common/slice"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/contract"
 )
 
@@ -57,7 +57,7 @@ func (ss StringSet) Except(s string) StringSet {
 }
 
 func (ss StringSet) SortedValues() []string {
-	values := make([]string, 0, len(ss))
+	values := slice.Prealloc[string](len(ss))
 	for v := range ss {
 		values = append(values, v)
 	}
@@ -113,16 +113,11 @@ func (s Set) Has(v interface{}) bool {
 	return ok
 }
 
-// SortedKeys returns a sorted list of keys for the given map. The map's key type must be of kind string.
-func SortedKeys(m interface{}) []string {
-	mv := reflect.ValueOf(m)
-
-	contract.Require(mv.Type().Kind() == reflect.Map, "m")
-	contract.Require(mv.Type().Key().Kind() == reflect.String, "m")
-
-	keys := make([]string, mv.Len())
-	for i, k := range mv.MapKeys() {
-		keys[i] = k.String()
+// SortedKeys returns a sorted list of keys for the given map.
+func SortedKeys[T any](m map[string]T) []string {
+	keys := slice.Prealloc[string](len(m))
+	for k := range m {
+		keys = append(keys, k)
 	}
 	sort.Strings(keys)
 
