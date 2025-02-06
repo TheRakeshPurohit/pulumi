@@ -36,12 +36,23 @@ from .config import (
     ConfigTypeError,
 )
 
+from .deprecated import (
+    deprecated,
+)
+
 from .errors import (
     RunError,
+    InputPropertyError,
+    InputPropertyErrorDetails,
+    InputPropertiesError,
 )
 
 from .invoke import (
     InvokeOptions,
+    InvokeOutputOptions,
+    InvokeTransform,
+    InvokeTransformArgs,
+    InvokeTransformResult,
 )
 
 from .metadata import (
@@ -64,6 +75,9 @@ from .resource import (
     ResourceTransformation,
     ResourceTransformationArgs,
     ResourceTransformationResult,
+    ResourceTransform,
+    ResourceTransformArgs,
+    ResourceTransformResult,
 )
 
 from .output import (
@@ -73,6 +87,7 @@ from .output import (
     InputType,
     UNKNOWN,
     contains_unknowns,
+    deferred_output,
 )
 
 from .log import (
@@ -84,17 +99,17 @@ from .log import (
 
 from .stack_reference import (
     StackReference,
+    StackReferenceOutputDetails,
 )
 
-# pylint: disable=redefined-builtin
 from ._types import (
     MISSING,
     input_type,
     output_type,
-    property,
+    property,  # noqa: A004 shadowing builtin
     getter,
-    get,
-    set,
+    get,  # noqa: A004 shadowing builtin
+    set,  # noqa: A004 shadowing builtin
 )
 
 from . import runtime, dynamic, policy, automation
@@ -113,10 +128,19 @@ __all__ = [
     "Config",
     "ConfigMissingError",
     "ConfigTypeError",
+    # deprecated
+    "deprecated",
     # errors
     "RunError",
+    "InputPropertiesError",
+    "InputPropertyError",
+    "InputPropertyErrorDetails",
     # invoke
     "InvokeOptions",
+    "InvokeOutputOptions",
+    "InvokeTransform",
+    "InvokeTransformArgs",
+    "InvokeTransformResult",
     # metadata
     "get_organization",
     "get_project",
@@ -135,6 +159,9 @@ __all__ = [
     "ResourceTransformation",
     "ResourceTransformationArgs",
     "ResourceTransformationResult",
+    "ResourceTransform",
+    "ResourceTransformArgs",
+    "ResourceTransformResult",
     # output
     "Output",
     "Input",
@@ -142,6 +169,7 @@ __all__ = [
     "InputType",
     "UNKNOWN",
     "contains_unknowns",
+    "deferred_output",
     # log
     "debug",
     "info",
@@ -149,6 +177,7 @@ __all__ = [
     "error",
     # stack_reference
     "StackReference",
+    "StackReferenceOutputDetails",
     # _types
     "MISSING",
     "input_type",

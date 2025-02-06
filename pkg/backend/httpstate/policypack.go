@@ -1,3 +1,17 @@
+// Copyright 2019-2024, Pulumi Corporation.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package httpstate
 
 import (
@@ -6,7 +20,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -21,10 +34,9 @@ import (
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/archive"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/contract"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/logging"
-	"github.com/pulumi/pulumi/sdk/v3/go/common/util/result"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/workspace"
 	"github.com/pulumi/pulumi/sdk/v3/nodejs/npm"
-	"github.com/pulumi/pulumi/sdk/v3/python"
+	"github.com/pulumi/pulumi/sdk/v3/python/toolchain"
 )
 
 type cloudRequiredPolicy struct {
@@ -36,8 +48,8 @@ type cloudRequiredPolicy struct {
 var _ engine.RequiredPolicy = (*cloudRequiredPolicy)(nil)
 
 func newCloudRequiredPolicy(client *client.Client,
-	policy apitype.RequiredPolicy, orgName string) *cloudRequiredPolicy {
-
+	policy apitype.RequiredPolicy, orgName string,
+) *cloudRequiredPolicy {
 	return &cloudRequiredPolicy{
 		client:         client,
 		RequiredPolicy: policy,
@@ -46,7 +58,7 @@ func newCloudRequiredPolicy(client *client.Client,
 }
 
 func (rp *cloudRequiredPolicy) Name() string    { return rp.RequiredPolicy.Name }
-func (rp *cloudRequiredPolicy) Version() string { return strconv.Itoa(rp.RequiredPolicy.Version) }
+func (rp *cloudRequiredPolicy) Version() string { return rp.RequiredPolicy.VersionTag }
 func (rp *cloudRequiredPolicy) OrgName() string { return rp.orgName }
 
 func (rp *cloudRequiredPolicy) Install(ctx context.Context) (string, error) {
@@ -59,7 +71,7 @@ func (rp *cloudRequiredPolicy) Install(ctx context.Context) (string, error) {
 		version = strconv.Itoa(policy.Version)
 	}
 	policyPackPath, installed, err := workspace.GetPolicyPath(rp.OrgName(),
-		strings.Replace(policy.Name, tokens.QNameDelimiter, "_", -1), version)
+		strings.ReplaceAll(policy.Name, tokens.QNameDelimiter, "_"), version)
 	if err != nil {
 		// Failed to get a sensible PolicyPack path.
 		return "", err
@@ -68,9 +80,11 @@ func (rp *cloudRequiredPolicy) Install(ctx context.Context) (string, error) {
 		return policyPackPath, nil
 	}
 
-	fmt.Printf("Installing policy pack %s %s...\n", policy.Name, version)
+	fmt.Printf("Installing policy pack %s %s...\r\n", policy.Name, version)
 
 	// PolicyPack has not been downloaded and installed. Do this now.
+
+	logging.V(7).Infof("Downloading policy pack %s %s from %s", policy.Name, version, policy.PackLocation)
 	policyPackTarball, err := rp.client.DownloadPolicyPack(ctx, policy.PackLocation)
 	if err != nil {
 		return "", err
@@ -82,8 +96,8 @@ func (rp *cloudRequiredPolicy) Install(ctx context.Context) (string, error) {
 func (rp *cloudRequiredPolicy) Config() map[string]*json.RawMessage { return rp.RequiredPolicy.Config }
 
 func newCloudBackendPolicyPackReference(
-	cloudConsoleURL, orgName string, name tokens.QName) *cloudBackendPolicyPackReference {
-
+	cloudConsoleURL, orgName string, name tokens.QName,
+) *cloudBackendPolicyPackReference {
 	return &cloudBackendPolicyPackReference{
 		orgName:         orgName,
 		name:            name,
@@ -146,8 +160,8 @@ func (pack *cloudPolicyPack) Backend() backend.Backend {
 }
 
 func (pack *cloudPolicyPack) Publish(
-	ctx context.Context, op backend.PublishOperation) result.Result {
-
+	ctx context.Context, op backend.PublishOperation,
+) error {
 	//
 	// Get PolicyPack metadata from the plugin.
 	//
@@ -156,17 +170,17 @@ func (pack *cloudPolicyPack) Publish(
 
 	abs, err := filepath.Abs(op.PlugCtx.Pwd)
 	if err != nil {
-		return result.FromError(err)
+		return err
 	}
 
 	analyzer, err := op.PlugCtx.Host.PolicyAnalyzer(tokens.QName(abs), op.PlugCtx.Pwd, nil /*opts*/)
 	if err != nil {
-		return result.FromError(err)
+		return err
 	}
 
 	analyzerInfo, err := analyzer.GetAnalyzerInfo()
 	if err != nil {
-		return result.FromError(err)
+		return err
 	}
 
 	// Update the name and version tag from the metadata.
@@ -180,9 +194,9 @@ func (pack *cloudPolicyPack) Publish(
 	// TODO[pulumi/pulumi#1334]: move to the language plugins so we don't have to hard code here.
 	runtime := op.PolicyPack.Runtime.Name()
 	if strings.EqualFold(runtime, "nodejs") {
-		packTarball, err = npm.Pack(ctx, op.PlugCtx.Pwd, os.Stderr)
+		packTarball, err = npm.Pack(ctx, npm.AutoPackageManager, op.PlugCtx.Pwd, os.Stderr)
 		if err != nil {
-			return result.FromError(fmt.Errorf("could not publish policies because of error running npm pack: %w", err))
+			return fmt.Errorf("could not publish policies because of error running npm pack: %w", err)
 		}
 	} else {
 		// npm pack puts all the files in a "package" subdirectory inside the .tgz it produces, so we'll do
@@ -190,7 +204,7 @@ func (pack *cloudPolicyPack) Publish(
 		// package directory to determine the runtime of the policy pack.
 		packTarball, err = archive.TGZ(op.PlugCtx.Pwd, "package", true /*useDefaultExcludes*/)
 		if err != nil {
-			return result.FromError(fmt.Errorf("could not publish policies because of error creating the .tgz: %w", err))
+			return fmt.Errorf("could not publish policies because of error creating the .tgz: %w", err)
 		}
 	}
 
@@ -202,7 +216,7 @@ func (pack *cloudPolicyPack) Publish(
 
 	publishedVersion, err := pack.cl.PublishPolicyPack(ctx, pack.ref.orgName, analyzerInfo, bytes.NewReader(packTarball))
 	if err != nil {
-		return result.FromError(err)
+		return err
 	}
 
 	fmt.Printf("\nPermalink: %s/%s\n", pack.ref.CloudConsoleURL(), publishedVersion)
@@ -247,20 +261,20 @@ func (pack *cloudPolicyPack) Remove(ctx context.Context, op backend.PolicyPackOp
 const packageDir = "package"
 
 func installRequiredPolicy(ctx context.Context, finalDir string, tgz io.ReadCloser) error {
-	// If part of the directory tree is missing, ioutil.TempDir will return an error, so make sure
+	// If part of the directory tree is missing, os.MkdirTemp will return an error, so make sure
 	// the path we're going to create the temporary folder in actually exists.
-	if err := os.MkdirAll(filepath.Dir(finalDir), 0700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(finalDir), 0o700); err != nil {
 		return fmt.Errorf("creating plugin root: %w", err)
 	}
 
-	tempDir, err := ioutil.TempDir(filepath.Dir(finalDir), fmt.Sprintf("%s.tmp", filepath.Base(finalDir)))
+	tempDir, err := os.MkdirTemp(filepath.Dir(finalDir), filepath.Base(finalDir)+".tmp")
 	if err != nil {
 		return fmt.Errorf("creating plugin directory %s: %w", tempDir, err)
 	}
 
 	// The policy pack files are actually in a directory called `package`.
 	tempPackageDir := filepath.Join(tempDir, packageDir)
-	if err := os.MkdirAll(tempPackageDir, 0700); err != nil {
+	if err := os.MkdirAll(tempPackageDir, 0o700); err != nil {
 		return fmt.Errorf("creating plugin root: %w", err)
 	}
 
@@ -301,17 +315,16 @@ func installRequiredPolicy(ctx context.Context, finalDir string, tgz io.ReadClos
 		}
 	}
 
-	fmt.Println("Finished installing policy pack")
+	fmt.Println("Finished installing policy pack\r")
 	fmt.Println()
 
 	return nil
 }
 
 func completeNodeJSInstall(ctx context.Context, finalDir string) error {
-	if bin, err := npm.Install(ctx, finalDir, false /*production*/, nil, os.Stderr); err != nil {
+	if bin, err := npm.Install(ctx, npm.AutoPackageManager, finalDir, false /*production*/, nil, os.Stderr); err != nil {
 		return fmt.Errorf("failed to install dependencies of policy pack; you may need to re-run `%s install` "+
 			"in %q before this policy pack works"+": %w", bin, finalDir, err)
-
 	}
 
 	return nil
@@ -319,7 +332,18 @@ func completeNodeJSInstall(ctx context.Context, finalDir string) error {
 
 func completePythonInstall(ctx context.Context, finalDir, projPath string, proj *workspace.PolicyPackProject) error {
 	const venvDir = "venv"
-	if err := python.InstallDependencies(ctx, finalDir, venvDir, false /*showOutput*/); err != nil {
+	// TODO[pulumi/pulumi/issues/16286]: Allow using different toolchains for policy packs.
+	tc, err := toolchain.ResolveToolchain(toolchain.PythonOptions{
+		Toolchain:  toolchain.Pip,
+		Root:       finalDir,
+		Virtualenv: venvDir,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to get python toolchain: %w", err)
+	}
+
+	if err := tc.InstallDependencies(ctx, finalDir, false /* useLanguageVersionTools */, false, /*showOutput*/
+		os.Stdout, os.Stderr); err != nil {
 		return err
 	}
 

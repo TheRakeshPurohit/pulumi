@@ -34,7 +34,7 @@ var _ codegen.DocLanguageHelper = DocLanguageHelper{}
 // GetDocLinkForPulumiType returns the NodeJS API doc link for a Pulumi type.
 func (d DocLanguageHelper) GetDocLinkForPulumiType(pkg *schema.Package, typeName string) string {
 	typeName = strings.ReplaceAll(typeName, "?", "")
-	return fmt.Sprintf("/docs/reference/pkg/nodejs/pulumi/pulumi/#%s", typeName)
+	return "/docs/reference/pkg/nodejs/pulumi/pulumi/#" + typeName
 }
 
 // GetDocLinkForResourceType returns the NodeJS API doc for a type belonging to a resource provider.
@@ -109,15 +109,28 @@ func (d DocLanguageHelper) GetMethodName(m *schema.Method) string {
 }
 
 func (d DocLanguageHelper) GetMethodResultName(pkg *schema.Package, modName string, r *schema.Resource,
-	m *schema.Method) string {
-
-	if info, ok := pkg.Language["nodejs"].(NodePackageInfo); ok {
-		if info.LiftSingleValueMethodReturns && m.Function.Outputs != nil && len(m.Function.Outputs.Properties) == 1 {
+	m *schema.Method,
+) string {
+	var objectReturnType *schema.ObjectType
+	if m.Function.ReturnType != nil {
+		if objectType, ok := m.Function.ReturnType.(*schema.ObjectType); ok && objectType != nil {
+			objectReturnType = objectType
+		} else {
 			modCtx := &modContext{
 				pkg: pkg.Reference(),
 				mod: modName,
 			}
-			return modCtx.typeString(m.Function.Outputs.Properties[0].Type, false, nil)
+			return modCtx.typeString(m.Function.ReturnType, false, nil)
+		}
+	}
+
+	if info, ok := pkg.Language["nodejs"].(NodePackageInfo); ok {
+		if info.LiftSingleValueMethodReturns && objectReturnType != nil && len(objectReturnType.Properties) == 1 {
+			modCtx := &modContext{
+				pkg: pkg.Reference(),
+				mod: modName,
+			}
+			return modCtx.typeString(objectReturnType.Properties[0].Type, false, nil)
 		}
 	}
 	return fmt.Sprintf("%s.%sResult", resourceName(r), title(d.GetMethodName(m)))
@@ -138,7 +151,7 @@ func (d DocLanguageHelper) GetModuleDocLink(pkg *schema.Package, modName string)
 	var displayName string
 	var link string
 	if modName == "" {
-		displayName = fmt.Sprintf("@pulumi/%s", pkg.Name)
+		displayName = "@pulumi/" + pkg.Name
 	} else {
 		displayName = fmt.Sprintf("@pulumi/%s/%s", pkg.Name, strings.ToLower(modName))
 	}

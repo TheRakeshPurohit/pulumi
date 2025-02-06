@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"math/big"
 	"strings"
+	"sync/atomic"
 
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclsyntax"
@@ -33,7 +34,7 @@ type TupleType struct {
 	ElementTypes []Type
 
 	elementUnion Type
-	s            string
+	s            atomic.Value // Value<string>
 }
 
 // NewTupleType creates a new tuple type with the given element types.
@@ -41,20 +42,31 @@ func NewTupleType(elementTypes ...Type) Type {
 	return &TupleType{ElementTypes: elementTypes}
 }
 
-func (t *TupleType) Pretty() pretty.Formatter {
+func (t *TupleType) pretty(seenFormatters map[Type]pretty.Formatter) pretty.Formatter {
 	elements := make([]pretty.Formatter, len(t.ElementTypes))
 	for i, el := range t.ElementTypes {
-		elements[i] = el.Pretty()
+		formatter, ok := seenFormatters[el]
+		if ok {
+			elements[i] = formatter
+		} else {
+			seenFormatters[el] = el.pretty(seenFormatters)
+			elements[i] = seenFormatters[el]
+		}
 	}
-	return pretty.Wrap{
+	return &pretty.Wrap{
 		Prefix: "(",
-		Value: pretty.List{
+		Value: &pretty.List{
 			AdjoinSeparator: true,
 			Separator:       ", ",
 			Elements:        elements,
 		},
 		Postfix: ")",
 	}
+}
+
+func (t *TupleType) Pretty() pretty.Formatter {
+	seenFormatters := map[Type]pretty.Formatter{}
+	return t.pretty(seenFormatters)
 }
 
 // SyntaxNode returns the syntax node for the type. This is always syntax.None.
@@ -140,12 +152,12 @@ func (u *tupleElementUnifier) unify(t *TupleType) {
 	if !u.any {
 		u.elementTypes, u.any, u.conversionKind = append([]Type(nil), t.ElementTypes...), true, SafeConversion
 	} else {
-		min := len(u.elementTypes)
-		if l := len(t.ElementTypes); l < min {
-			min = l
+		minimum := len(u.elementTypes)
+		if l := len(t.ElementTypes); l < minimum {
+			minimum = l
 		}
 
-		for i := 0; i < min; i++ {
+		for i := 0; i < minimum; i++ {
 			element, ck := u.elementTypes[i].unify(t.ElementTypes[i])
 			if ck < u.conversionKind {
 				u.conversionKind = ck
@@ -154,11 +166,11 @@ func (u *tupleElementUnifier) unify(t *TupleType) {
 		}
 
 		if len(u.elementTypes) > len(t.ElementTypes) {
-			for i := min; i < len(u.elementTypes); i++ {
+			for i := minimum; i < len(u.elementTypes); i++ {
 				u.elementTypes[i] = NewOptionalType(u.elementTypes[i])
 			}
 		} else {
-			for _, t := range t.ElementTypes[min:] {
+			for _, t := range t.ElementTypes[minimum:] {
 				u.elementTypes = append(u.elementTypes, NewOptionalType(t))
 			}
 		}
@@ -241,14 +253,18 @@ func (t *TupleType) String() string {
 }
 
 func (t *TupleType) string(seen map[Type]struct{}) string {
-	if t.s == "" {
-		elements := make([]string, len(t.ElementTypes))
-		for i, e := range t.ElementTypes {
-			elements[i] = e.string(seen)
-		}
-		t.s = fmt.Sprintf("tuple(%s)", strings.Join(elements, ", "))
+	if s := t.s.Load(); s != nil {
+		return s.(string)
 	}
-	return t.s
+
+	elements := make([]string, len(t.ElementTypes))
+	for i, e := range t.ElementTypes {
+		elements[i] = e.string(seen)
+	}
+
+	s := fmt.Sprintf("tuple(%s)", strings.Join(elements, ", "))
+	t.s.Store(s)
+	return s
 }
 
 func (t *TupleType) unify(other Type) (Type, ConversionKind) {

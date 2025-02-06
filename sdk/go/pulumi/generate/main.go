@@ -17,7 +17,6 @@ package main
 
 import (
 	"fmt"
-	"io"
 	"log"
 	"os"
 	"os/exec"
@@ -25,6 +24,8 @@ import (
 	"strings"
 	"text/template"
 	"unicode"
+
+	"github.com/pulumi/pulumi/sdk/v3/go/common/slice"
 )
 
 type builtin struct {
@@ -211,7 +212,7 @@ var funcs = template.FuncMap{
 
 func makeBuiltins(primitives []*builtin) []*builtin {
 	// Augment primitives with array and map types.
-	var builtins []*builtin
+	builtins := slice.Prealloc[*builtin](len(primitives))
 	for _, p := range primitives {
 		p.Strategy = "primitive"
 		name := ""
@@ -272,7 +273,7 @@ func makeBuiltins(primitives []*builtin) []*builtin {
 			Example:       fmt.Sprintf("%sMapArray{%sMap{\"baz\": %s}}", name, name, p.Example),
 			RegisterInput: true,
 		})
-		builtins = append(builtins, &builtin{
+		mapMapType := &builtin{
 			Name:          name + "MapMap",
 			Type:          "map[string]" + name + "MapInput",
 			ItemType:      name + "MapInput",
@@ -280,7 +281,8 @@ func makeBuiltins(primitives []*builtin) []*builtin {
 			item:          mapType,
 			Example:       fmt.Sprintf("%sMapMap{\"baz\": %sMap{\"baz\": %s}}", name, name, p.Example),
 			RegisterInput: true,
-		})
+		}
+		builtins = append(builtins, mapMapType)
 		arrayArrayType := &builtin{
 			Name:          name + "ArrayArray",
 			Type:          "[]" + name + "ArrayInput",
@@ -301,6 +303,19 @@ func makeBuiltins(primitives []*builtin) []*builtin {
 				elementType:   "map[string][][]" + p.Type,
 				item:          arrayArrayType,
 				Example:       fmt.Sprintf("%sArrayArrayMap{\"baz\": %sArrayArray{Array{%s}}}", name, name, p.Example),
+				RegisterInput: true,
+			})
+		}
+
+		// Unblock https://github.com/pulumi/pulumi/issues/17415
+		if name == "String" {
+			builtins = append(builtins, &builtin{
+				Name:          name + "MapMapMap",
+				Type:          "map[string]" + name + "MapMapInput",
+				ItemType:      name + "MapMapInput",
+				elementType:   "map[string]map[string]map[string]" + p.Type,
+				item:          mapMapType,
+				Example:       fmt.Sprintf("%sMapMapMap{\"baz\": %sMapMap{\"baz\": %sMap{\"baz\": %s}}}", name, name, name, p.Example),
 				RegisterInput: true,
 			})
 		}
@@ -336,16 +351,10 @@ func main() {
 
 		pwd, err := os.Getwd()
 		if err != nil {
-			log.Fatalf("code generation failed: %v", err.Error())
+			log.Fatalf("code generation failed: %v", err)
 		}
 
-		parts := strings.Split(t.Name(), "-")
-		filename := strings.TrimRight(parts[len(parts)-1], ".template")
-		parts[len(parts)-1] = filename
-
-		paths := append([]string{pwd}, parts...)
-
-		fullname := filepath.Join(paths...)
+		fullname := filepath.Join(pwd, templateFilePath(t.Name()))
 		f, err := os.Create(fullname)
 		if err != nil {
 			log.Fatalf("failed to create %v: %v", fullname, err)
@@ -356,18 +365,28 @@ func main() {
 		f.Close()
 
 		gofmt := exec.Command("gofmt", "-s", "-w", fullname)
-		stderr, err := gofmt.StderrPipe()
-		if err != nil {
-			log.Fatalf("failed to pipe stderr from gofmt: %v", err)
-		}
-		go func() {
-			_, err := io.Copy(os.Stderr, stderr)
-			if err != nil {
-				panic(fmt.Sprintf("unexpected error running gofmt: %v", err))
-			}
-		}()
+		gofmt.Stdout = os.Stdout
+		gofmt.Stderr = os.Stderr
 		if err := gofmt.Run(); err != nil {
-			log.Fatalf("failed to gofmt %v: %v", fullname, err)
+			log.Fatalf("failed to run gofmt on %v: %v", fullname, err)
 		}
 	}
+}
+
+// Determines the relative file path for a templated file
+// given the name of the template.
+//
+// Dashes in template names are converted to directory separators
+// and the .template suffix is removed.
+//
+// For example:
+//
+//	foo-bar.go.template      => foo/bar.go
+//	bar.go.template          => bar.go
+//	fizz-buz-bar.go.template => fizz/buz/bar.go
+func templateFilePath(name string) string {
+	parts := strings.Split(name, "-")
+	filename := strings.TrimSuffix(parts[len(parts)-1], ".template")
+	parts[len(parts)-1] = filename
+	return filepath.Join(parts...)
 }

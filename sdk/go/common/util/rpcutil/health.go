@@ -20,15 +20,16 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials/insecure"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/status"
 )
 
 // Healthcheck will poll the address at duration intervals and then call cancel once it reports unhealthy
 func Healthcheck(context context.Context, addr string, duration time.Duration, cancel context.CancelFunc) error {
-	conn, err := grpc.Dial(
+	conn, err := grpc.NewClient(
 		addr,
-		grpc.WithInsecure(),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
 		grpc.WithUnaryInterceptor(OpenTracingClientInterceptor()),
 		grpc.WithStreamInterceptor(OpenTracingStreamClientInterceptor()),
 		GrpcChannelOptions(),

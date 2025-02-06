@@ -17,14 +17,14 @@ package workspace
 import (
 	"bytes"
 	"encoding/json"
-	"io/ioutil"
+	"fmt"
 	"os"
 	"path/filepath"
 	"time"
 
-	"github.com/pkg/errors"
 	"github.com/rogpeppe/go-internal/lockedfile"
 
+	"github.com/pulumi/pulumi/sdk/v3/go/common/slice"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/contract"
 	"github.com/pulumi/pulumi/sdk/v3/go/common/util/logging"
 )
@@ -35,10 +35,6 @@ import (
 //
 //nolint:gosec
 const PulumiCredentialsPathEnvVar = "PULUMI_CREDENTIALS_PATH"
-
-// PulumiBackendURLEnvVar is an environment variable which can be used to set the backend that will be
-// used instead of the currently logged in backend or the current projects backend.
-const PulumiBackendURLEnvVar = "PULUMI_BACKEND_URL"
 
 // GetAccount returns an account underneath a given key.
 //
@@ -112,10 +108,26 @@ func StoreAccount(key string, account Account, current bool) error {
 
 // Account holds the information associated with a Pulumi account.
 type Account struct {
-	AccessToken     string    `json:"accessToken,omitempty"`     // The access token for this account.
-	Username        string    `json:"username,omitempty"`        // The username for this account.
-	Organizations   []string  `json:"organizations,omitempty"`   // The organizations for this account.
-	LastValidatedAt time.Time `json:"lastValidatedAt,omitempty"` // The last time this token was validated.
+	// The access token for this account.
+	AccessToken string `json:"accessToken,omitempty"`
+	// The username for this account.
+	Username string `json:"username,omitempty"`
+	// The organizations for this account.
+	Organizations []string `json:"organizations,omitempty"`
+	// The last time this token was validated.
+	LastValidatedAt time.Time `json:"lastValidatedAt,omitempty"`
+	// Allow insecure server connections when using SSL.
+	Insecure bool `json:"insecure,omitempty"`
+	// Information about the token used to authenticate.
+	TokenInformation *TokenInformation `json:"tokenInformation,omitempty"`
+}
+
+// Information about the token that was used to authenticate the current user. One (or none) of Team or Organization
+// will be set, but not both.
+type TokenInformation struct {
+	Name         string `json:"name"`                   // The name of the token.
+	Organization string `json:"organization,omitempty"` // If this was an organization token, the organization it was for.
+	Team         string `json:"team,omitempty"`         // If this was a team token, the team it was for.
 }
 
 // Credentials hold the information necessary for authenticating Pulumi Cloud API requests.  It contains
@@ -134,51 +146,17 @@ func getCredsFilePath() (string, error) {
 	if pulumiFolder == "" {
 		folder, err := GetPulumiHomeDir()
 		if err != nil {
-			return "", errors.Wrapf(err, "failed to get the home path")
+			return "", fmt.Errorf("failed to get the home path: %w", err)
 		}
 		pulumiFolder = folder
 	}
 
-	err := os.MkdirAll(pulumiFolder, 0700)
+	err := os.MkdirAll(pulumiFolder, 0o700)
 	if err != nil {
-		return "", errors.Wrapf(err, "failed to create '%s'", pulumiFolder)
+		return "", fmt.Errorf("failed to create '%s': %w", pulumiFolder, err)
 	}
 
 	return filepath.Join(pulumiFolder, "credentials.json"), nil
-}
-
-// GetCurrentCloudURL returns the URL of the cloud we are currently connected to. This may be empty if we
-// have not logged in. Note if PULUMI_BACKEND_URL is set, the corresponding value is returned
-// instead irrespective of the backend for current project or stored credentials.
-func GetCurrentCloudURL() (string, error) {
-	// Allow PULUMI_BACKEND_URL to override the current cloud URL selection
-	if backend := os.Getenv(PulumiBackendURLEnvVar); backend != "" {
-		return backend, nil
-	}
-
-	var url string
-	// Try detecting backend from config
-	projPath, err := DetectProjectPath()
-	if err == nil && projPath != "" {
-		proj, err := LoadProject(projPath)
-		if err != nil {
-			return "", errors.Wrap(err, "could not load current project")
-		}
-
-		if proj.Backend != nil {
-			url = proj.Backend.URL
-		}
-	}
-
-	if url == "" {
-		creds, err := GetStoredCredentials()
-		if err != nil {
-			return "", err
-		}
-		url = creds.Current
-	}
-
-	return url, nil
 }
 
 // GetStoredCredentials returns any credentials stored on the local machine.
@@ -193,16 +171,24 @@ func GetStoredCredentials() (Credentials, error) {
 		if os.IsNotExist(err) {
 			return Credentials{}, nil
 		}
-		return Credentials{}, errors.Wrapf(err, "reading '%s'", credsFile)
+		return Credentials{}, fmt.Errorf("reading '%s': %w", credsFile, err)
+	}
+
+	// If the file is empty, we can act as if it doesn't exist rather than trying
+	// (and failing) to deserialize its contents. This allows us to recover from
+	// situations where a write to the file was interrupted or it was otherwise
+	// clobbered.
+	if len(c) == 0 {
+		return Credentials{}, nil
 	}
 
 	var creds Credentials
 	if err = json.Unmarshal(c, &creds); err != nil {
-		return Credentials{}, errors.Wrapf(err, "failed to read Pulumi credentials file. Please re-run "+
-			"`pulumi login` to reset your credentials file")
+		return Credentials{}, fmt.Errorf("failed to read Pulumi credentials file. Please fix "+
+			"or delete invalid credentials file: '%s': %w", credsFile, err)
 	}
 
-	var secrets []string
+	secrets := slice.Prealloc[string](len(creds.AccessTokens))
 	for _, v := range creds.AccessTokens {
 		secrets = append(secrets, v)
 	}
@@ -230,14 +216,10 @@ func StoreCredentials(creds Credentials) error {
 
 	raw, err := json.MarshalIndent(creds, "", "    ")
 	if err != nil {
-		return errors.Wrapf(err, "marshalling credentials object")
+		return fmt.Errorf("marshalling credentials object: %w", err)
 	}
 
-	if err := lockedfile.Write(credsFile, bytes.NewReader(raw), 0600); err != nil {
-		return err
-	}
-
-	return nil
+	return lockedfile.Write(credsFile, bytes.NewReader(raw), 0o600)
 }
 
 type BackendConfig struct {
@@ -254,14 +236,14 @@ func getConfigFilePath() (string, error) {
 	if pulumiFolder == "" {
 		folder, err := GetPulumiHomeDir()
 		if err != nil {
-			return "", errors.Wrapf(err, "failed to get the home path")
+			return "", fmt.Errorf("failed to get the home path: %w", err)
 		}
 		pulumiFolder = folder
 	}
 
-	err := os.MkdirAll(pulumiFolder, 0700)
+	err := os.MkdirAll(pulumiFolder, 0o700)
 	if err != nil {
-		return "", errors.Wrapf(err, "failed to create '%s'", pulumiFolder)
+		return "", fmt.Errorf("failed to create '%s': %w", pulumiFolder, err)
 	}
 
 	return filepath.Join(pulumiFolder, "config.json"), nil
@@ -273,17 +255,17 @@ func GetPulumiConfig() (PulumiConfig, error) {
 		return PulumiConfig{}, err
 	}
 
-	c, err := ioutil.ReadFile(configFile)
+	c, err := os.ReadFile(configFile)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return PulumiConfig{}, nil
 		}
-		return PulumiConfig{}, errors.Wrapf(err, "reading '%s'", configFile)
+		return PulumiConfig{}, fmt.Errorf("reading '%s': %w", configFile, err)
 	}
 
 	var config PulumiConfig
 	if err = json.Unmarshal(c, &config); err != nil {
-		return PulumiConfig{}, errors.Wrapf(err, "failed to read Pulumi config file")
+		return PulumiConfig{}, fmt.Errorf("failed to read Pulumi config file: %w", err)
 	}
 
 	return config, nil
@@ -297,12 +279,12 @@ func StorePulumiConfig(config PulumiConfig) error {
 
 	raw, err := json.MarshalIndent(config, "", "    ")
 	if err != nil {
-		return errors.Wrapf(err, "marshalling config object")
+		return fmt.Errorf("marshalling config object: %w", err)
 	}
 
 	// Use a temporary file and atomic os.Rename to ensure the file contents are
 	// updated atomically to ensure concurrent `pulumi` CLI operations are safe.
-	tempConfigFile, err := ioutil.TempFile(filepath.Dir(configFile), "config-*.json")
+	tempConfigFile, err := os.CreateTemp(filepath.Dir(configFile), "config-*.json")
 	if err != nil {
 		return err
 	}
@@ -338,24 +320,4 @@ func SetBackendConfigDefaultOrg(backendURL, defaultOrg string) error {
 	}
 
 	return StorePulumiConfig(config)
-}
-
-func GetBackendConfigDefaultOrg() (string, error) {
-	config, err := GetPulumiConfig()
-	if err != nil && !os.IsNotExist(err) {
-		return "", err
-	}
-
-	backendURL, err := GetCurrentCloudURL()
-	if err != nil {
-		return "", err
-	}
-
-	if beConfig, ok := config.BackendConfig[backendURL]; ok {
-		if beConfig.DefaultOrg != "" {
-			return beConfig.DefaultOrg, nil
-		}
-	}
-
-	return "", nil
 }

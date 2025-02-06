@@ -1,3 +1,17 @@
+// Copyright 2020-2024, Pulumi Corporation.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package schema
 
 import (
@@ -5,7 +19,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net/url"
 	"os"
 	"path"
@@ -72,7 +85,13 @@ func getDocsForFunction(f *Function) []doc {
 		{entity: entity + "/deprecationMessage", content: f.DeprecationMessage},
 	}
 	docs = append(docs, getDocsForObjectType(entity+"/inputs/properties", f.Inputs)...)
-	docs = append(docs, getDocsForObjectType(entity+"/outputs/properties", f.Outputs)...)
+
+	if f.ReturnType != nil {
+		if objectType, ok := f.ReturnType.(*ObjectType); ok && objectType != nil {
+			docs = append(docs, getDocsForObjectType(entity+"/outputs/properties", objectType)...)
+		}
+	}
+
 	return docs
 }
 
@@ -118,15 +137,14 @@ func getDocsForPackage(pkg *Package) []doc {
 	return allDocs
 }
 
+//nolint:paralleltest // needs to set plugin acquisition env var
 func TestParseAndRenderDocs(t *testing.T) {
-	t.Parallel()
-
 	files, err := os.ReadDir(testdataPath)
 	if err != nil {
 		t.Fatalf("could not read test data: %v", err)
 	}
 
-	//nolint:paralleltest // false positive because range var isn't used directly in t.Run(name) arg
+	//nolint:paralleltest // needs to set plugin acquisition env var
 	for _, f := range files {
 		f := f
 		if filepath.Ext(f.Name()) != ".json" || strings.Contains(f.Name(), "awsx") {
@@ -134,10 +152,10 @@ func TestParseAndRenderDocs(t *testing.T) {
 		}
 
 		t.Run(f.Name(), func(t *testing.T) {
-			t.Parallel()
+			t.Setenv("PULUMI_DISABLE_AUTOMATIC_PLUGIN_ACQUISITION", "false")
 
 			path := filepath.Join(testdataPath, f.Name())
-			contents, err := ioutil.ReadFile(path)
+			contents, err := os.ReadFile(path)
 			if err != nil {
 				t.Fatalf("could not read %v: %v", path, err)
 			}
@@ -202,9 +220,8 @@ func TestReferenceRenderer(t *testing.T) {
 
 		if _, ok := seenNames[name]; ok {
 			continue
-		} else {
-			seenNames[name] = struct{}{}
 		}
+		seenNames[name] = struct{}{}
 
 		t.Run(f.Name(), func(t *testing.T) {
 			t.Parallel()
@@ -222,7 +239,7 @@ func TestReferenceRenderer(t *testing.T) {
 				doc := doc
 
 				text := []byte(fmt.Sprintf("[entity](%s)", doc.entity))
-				expected := strings.Replace(doc.entity, "/", "_", -1) + "\n"
+				expected := strings.ReplaceAll(doc.entity, "/", "_") + "\n"
 
 				parsed := ParseDocs(text)
 				actual := []byte(RenderDocsToString(text, parsed, WithReferenceRenderer(
